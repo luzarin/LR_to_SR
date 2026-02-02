@@ -1,5 +1,6 @@
 import os, sys, time
 from pathlib import Path
+
 import torch
 import numpy as np
 import rasterio
@@ -10,14 +11,27 @@ import streamlit as st
 sys.path.insert(0, ".")
 import SEN2SRLite.load as loader
 
+# Sentinel-2 L2A bands typical order (10 bands)
+BAND_KEYS = ["B02","B03","B04","B05","B06","B07","B08","B8A","B11","B12"]
+
 
 # -------------------------- Utils --------------------------
 def list_tifs(folder: str):
+    """
+    List .tif/.tiff in a folder without duplicates (Windows is case-insensitive).
+    Returns absolute resolved paths as strings.
+    """
     p = Path(folder)
     if not p.exists() or not p.is_dir():
         return []
-    tifs = list(p.glob("*.tif")) + list(p.glob("*.tiff")) + list(p.glob("*.TIF")) + list(p.glob("*.TIFF"))
-    return sorted([str(x) for x in tifs])
+
+    files = []
+    for x in p.iterdir():
+        if x.is_file() and x.suffix.lower() in {".tif", ".tiff"}:
+            files.append(x.resolve())
+
+    uniq = sorted({str(x): x for x in files}.keys(), key=lambda s: Path(s).name.lower())
+    return uniq
 
 
 def safe_delete(path: str):
@@ -58,7 +72,6 @@ def resolve_device(device_mode: str) -> str:
         if not torch.cuda.is_available():
             raise RuntimeError("Seleccionaste GPU pero torch no detecta CUDA.")
         return "cuda"
-    # auto
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -125,6 +138,19 @@ def run_sr(
         if src.count != 10:
             raise ValueError(f"Expected 10 bands input. Got {src.count}.")
 
+        # --------- CAPTURE BAND NAMES + TAGS FROM INPUT ---------
+        src_desc = list(src.descriptions) if src.descriptions else [None] * src.count
+        band_names = []
+        for i in range(src.count):
+            d = src_desc[i] if i < len(src_desc) else None
+            if d is None or str(d).strip() == "":
+                d = BAND_KEYS[i] if i < len(BAND_KEYS) else f"Band {i+1}"
+            band_names.append(str(d))
+
+        global_tags = src.tags()  # dataset-level tags
+        per_band_tags = {i: src.tags(i) for i in range(1, src.count + 1)}  # band-level tags
+
+        # --------- BUILD OUTPUT PROFILE ---------
         profile = src.profile.copy()
         profile.pop("blockxsize", None)
         profile.pop("blockysize", None)
@@ -156,6 +182,16 @@ def run_sr(
         last_draw = 0.0
 
         with rasterio.open(out_tif, "w", **profile) as dst:
+            # --------- APPLY BAND DESCRIPTIONS + TAGS TO OUTPUT (ONCE) ---------
+            if global_tags:
+                dst.update_tags(**global_tags)
+
+            for i, name in enumerate(band_names, start=1):
+                dst.set_band_description(i, name)
+                tags_i = per_band_tags.get(i)
+                if tags_i:
+                    dst.update_tags(i, **tags_i)
+
             batch_tiles = []
             batch_meta = []
 
@@ -169,14 +205,14 @@ def run_sr(
                 for out_sr, meta in zip(outs, batch_meta):
                     (c0, r0, w, h, is_left, is_top, is_right, is_bottom) = meta
 
-                    left   = 0 if is_left   else pad
-                    top    = 0 if is_top    else pad
-                    right  = w if is_right  else (w - pad)
+                    left = 0 if is_left else pad
+                    top = 0 if is_top else pad
+                    right = w if is_right else (w - pad)
                     bottom = h if is_bottom else (h - pad)
 
-                    sr_left   = left * factor
-                    sr_top    = top * factor
-                    sr_right  = right * factor
+                    sr_left = left * factor
+                    sr_top = top * factor
+                    sr_right = right * factor
                     sr_bottom = bottom * factor
 
                     out_crop = out_sr[:, sr_top:sr_bottom, sr_left:sr_right]
@@ -223,7 +259,8 @@ def run_sr(
 
                         pbar.progress(min(int(pct * 100), 100))
                         status.write(
-                            f"device={device} | tiles {done_tiles}/{total_tiles} | {rate:.2f} tiles/s | ETA {int(eta//60):02d}:{int(eta%60):02d}"
+                            f"device={device} | tiles {done_tiles}/{total_tiles} | "
+                            f"{rate:.2f} tiles/s | ETA {int(eta//60):02d}:{int(eta%60):02d}"
                         )
                         last_draw = now
 
@@ -249,14 +286,40 @@ with st.sidebar:
     tifs = list_tifs(input_dir)
 
     if tifs:
-        in_tif = st.selectbox("IN_TIF", tifs)
+        in_tif = st.selectbox("Input filename", tifs, format_func=lambda s: Path(s).name)
     else:
         st.warning("No encontré .tif/.tiff en esa carpeta. Escribe una ruta válida o pon el archivo manual.")
-        in_tif = st.text_input("IN_TIF (manual)", value="./input_10bands_LR/sept_2024_10bands.tif")
+        in_tif = st.text_input("Input filename (manual)", value="./input_10bands_LR/sept_2024_10bands.tif")
 
     st.caption("Output: carpeta + nombre (se creará si no existe).")
     output_dir = st.text_input("Output folder", value="./output_10bands_SR")
-    out_name = st.text_input("Output filename", value="sept_2024_SR.tif")
+
+    # --- Auto output name: <input_stem>_SR.tif (no overwrite if user edited) ---
+    in_name = Path(in_tif).name if in_tif else "output.tif"
+    in_stem = Path(in_name).stem
+    suggested_out = f"{in_stem}_SR.tif"
+
+    if "out_name_user_edited" not in st.session_state:
+        st.session_state.out_name_user_edited = False
+    if "out_name" not in st.session_state:
+        st.session_state.out_name = suggested_out
+    if "last_in_tif" not in st.session_state:
+        st.session_state.last_in_tif = in_tif
+
+    if in_tif != st.session_state.last_in_tif:
+        st.session_state.last_in_tif = in_tif
+        if not st.session_state.out_name_user_edited:
+            st.session_state.out_name = suggested_out
+
+    def _mark_outname_edited():
+        st.session_state.out_name_user_edited = True
+
+    out_name = st.text_input(
+        "Output filename",
+        key="out_name",
+        on_change=_mark_outname_edited,
+    )
+
     out_tif = str(Path(output_dir) / out_name)
 
     st.header("Compute")
@@ -273,23 +336,23 @@ with st.sidebar:
 
     run = st.button("Run", type="primary")
 
+
 # Resumen fuera del sidebar
 st.write("### Config actual")
 st.code(
     f"WEIGHTS_DIR = {weights_dir}\n"
     f"INPUT_DIR   = {input_dir}\n"
-    f"IN_TIF      = {in_tif}\n"
+    f"INPUT_FILE  = {in_tif}\n"
     f"OUT_TIF     = {out_tif}\n"
     f"DEVICE      = {device_mode}\n"
     f"FACTOR={int(factor)} PATCH={int(patch)} PAD={int(pad)} BATCH={int(batch)}"
 )
 
 if run:
-    # Validaciones mínimas
     if not Path(weights_dir).exists():
         st.error(f"No existe WEIGHTS_DIR: {weights_dir}")
     elif not Path(in_tif).exists():
-        st.error(f"No existe IN_TIF: {in_tif}")
+        st.error(f"No existe Input filename: {in_tif}")
     else:
         try:
             run_sr(
