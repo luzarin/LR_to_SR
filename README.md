@@ -22,11 +22,12 @@ uv python list
 
 5. Clonar repo
 ```bash
-url repo.git
+git clone https://github.com/luzarin/LR_to_SR.git
 ```
+
 6. Cambiar dir al repo 
 ```bash
-cd repo
+cd LR_to_SR
 ```
 
 7. Crear un virtual environment con versión en específico
