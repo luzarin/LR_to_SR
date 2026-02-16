@@ -100,32 +100,25 @@ source .venv/bin/activate
 pip install -U pip setuptools wheel
 ```
 
-6. Instalar OpenSR
-```
-pip install opensr-utils opensr-model
-```
-
-7. Instalar requirements
+6. Instalar requirements
 ```
 pip install -r requirements.txt
 ```
 
-8. Instalar PyTorch (GPU o CPU)
-```
-pip uninstall -y torch torchvision torchaudio
-pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
-```
-```
-pip uninstall -y torch torchvision torchaudio
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
-```
-
-9. Verificar instalación GPU
+7. Verificar si PyTorch está instalado
 ```
 python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no gpu')"
 ```
 
-10. Correr app
+8. Instalar PyTorch (GPU o CPU) si falta
+```
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+```
+```
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+```
+
+9. Correr app
 ```
 streamlit run app.py
 ```
