@@ -7,11 +7,11 @@ Herramienta web para mejorar la resolución espacial de imágenes satelitales de
 Se recomienda instalar las dependencias siguiendo estos pasos:
 
 ```bash
-# 1. Clonar el repositorio y entrar al directorio
+# 1. Clonar el repositorio
 git clone https://github.com/luzarin/LR_to_SR.git
 cd LR_to_SR
 
-# 2. Instalar la versión exacta de Python y definirla localmente
+# 2. Instalar la versión del proyecto de Python
 pyenv install 3.11.9
 pyenv local 3.11.9
 
@@ -19,29 +19,18 @@ pyenv local 3.11.9
 python -m venv .venv
 source .venv/bin/activate
 
-# 4. Actualizar pip e instalar dependencias base
+# 4. Instalar dependencias
 pip install -U pip setuptools wheel
+pip install opensr-utils opensr-model
 pip install -r requirements.txt
 ```
 
-5. Instalar PyTorch (Elige una opción, CPU o GPU)
-
-*Para GPU (CUDA 12.1):*
 ```bash
-pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
-```
-
-*Para CPU:*
-```bash
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
-```
-
-6. Verificar si PyTorch está instalado con GPU (Opcional)
-```bash
+# 5. Verificar si PyTorch está instalado con GPU
 python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no gpu')"
 ```
 
-7. Correr la app
 ```bash
+# 6. Correr la app
 streamlit run app.py
 ```
