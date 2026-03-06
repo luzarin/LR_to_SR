@@ -22,6 +22,7 @@ source .venv/bin/activate
 # 4. Instalar dependencias
 pip install -U pip setuptools wheel
 pip install opensr-utils opensr-model
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
 ```
 
@@ -32,5 +33,5 @@ python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_
 
 ```bash
 # 6. Correr la app
-streamlit run app.py
+uvicorn app:app --reload
 ```

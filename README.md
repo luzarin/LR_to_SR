@@ -24,6 +24,7 @@ uv run python -m venv .venv
 
 # 5. Instalar dependencias
 uv pip install opensr-utils opensr-model
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 uv pip install -r requirements.txt
 ```
 
@@ -34,5 +35,5 @@ python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_
 
 ```powershell
 # 7. Correr la app
-streamlit run app.py
+uv run uvicorn app:app --reload
 ```
