@@ -1,26 +1,36 @@
-import os, sys, time
+import os, sys, time, json
 from pathlib import Path
 
 import torch
 import numpy as np
 import rasterio
 from rasterio.windows import Window
-import streamlit as st
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # Para importar SEN2SRLite.load cuando corres desde SR/
 sys.path.insert(0, ".")
 import SEN2SRLite.load as loader
 
-# Sentinel-2 L2A bands typical order (10 bands)
 BAND_KEYS = ["B02","B03","B04","B05","B06","B07","B08","B8A","B11","B12"]
+
+app = FastAPI(title="SEN2SRLite API")
+
+# Aseguramos que exista static
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+def read_root():
+    return FileResponse("static/index.html")
 
 
 # -------------------------- Utils --------------------------
 def list_tifs(folder: str):
-    """
-    List .tif/.tiff in a folder without duplicates (Windows is case-insensitive).
-    Returns absolute resolved paths as strings.
-    """
     p = Path(folder)
     if not p.exists() or not p.is_dir():
         return []
@@ -63,9 +73,6 @@ def denormalize_output(y: np.ndarray) -> np.ndarray:
 
 
 def resolve_device(device_mode: str) -> str:
-    """
-    device_mode: "auto" | "cuda (GPU)" | "cpu"
-    """
     if device_mode == "cpu":
         return "cpu"
     if device_mode.startswith("cuda"):
@@ -107,7 +114,8 @@ def run_batch(model, device, batch_x_np):
     return [y[i] for i in range(y.shape[0])]
 
 
-def run_sr(
+# -------------------------- Inference Generator --------------------------
+def run_sr_generator(
     weights_dir: Path,
     in_tif: str,
     out_tif: str,
@@ -121,249 +129,204 @@ def run_sr(
     start_t = time.time()
     step = patch - 2 * pad
     if step <= 0:
-        raise ValueError("PATCH - 2*PAD must be > 0.")
+        yield {"error": "PATCH - 2*PAD must be > 0."}
+        return
 
-    device = resolve_device(device_mode)
+    try:
+        device = resolve_device(device_mode)
+        yield {"log": f"Dispositivo resuelto: {device}"}
 
-    model = build_model(weights_dir, device)
-    if hasattr(model, "eval"):
-        model.eval()
-    if hasattr(model, "to"):
-        model.to(device)
+        model = build_model(weights_dir, device)
+        if hasattr(model, "eval"):
+            model.eval()
+        if hasattr(model, "to"):
+            model.to(device)
 
-    os.makedirs(os.path.dirname(out_tif) or ".", exist_ok=True)
-    safe_delete(out_tif)
+        os.makedirs(os.path.dirname(out_tif) or ".", exist_ok=True)
+        safe_delete(out_tif)
 
-    with rasterio.open(in_tif) as src:
-        if src.count != 10:
-            raise ValueError(f"Expected 10 bands input. Got {src.count}.")
+        with rasterio.open(in_tif) as src:
+            if src.count != 10:
+                yield {"error": f"Expected 10 bands input. Got {src.count}."}
+                return
 
-        # --------- CAPTURE BAND NAMES + TAGS FROM INPUT ---------
-        src_desc = list(src.descriptions) if src.descriptions else [None] * src.count
-        band_names = []
-        for i in range(src.count):
-            d = src_desc[i] if i < len(src_desc) else None
-            if d is None or str(d).strip() == "":
-                d = BAND_KEYS[i] if i < len(BAND_KEYS) else f"Band {i+1}"
-            band_names.append(str(d))
+            src_desc = list(src.descriptions) if src.descriptions else [None] * src.count
+            band_names = []
+            for i in range(src.count):
+                d = src_desc[i] if i < len(src_desc) else None
+                if d is None or str(d).strip() == "":
+                    d = BAND_KEYS[i] if i < len(BAND_KEYS) else f"Band {i+1}"
+                band_names.append(str(d))
 
-        global_tags = src.tags()  # dataset-level tags
-        per_band_tags = {i: src.tags(i) for i in range(1, src.count + 1)}  # band-level tags
+            global_tags = src.tags()
+            per_band_tags = {i: src.tags(i) for i in range(1, src.count + 1)}
 
-        # --------- BUILD OUTPUT PROFILE ---------
-        profile = src.profile.copy()
-        profile.pop("blockxsize", None)
-        profile.pop("blockysize", None)
-        profile.pop("tiled", None)
+            profile = src.profile.copy()
+            profile.pop("blockxsize", None)
+            profile.pop("blockysize", None)
+            profile.pop("tiled", None)
 
-        profile.update(
-            driver="GTiff",
-            dtype="uint16",
-            count=src.count,
-            width=src.width * factor,
-            height=src.height * factor,
-            transform=src.transform * src.transform.scale(1 / factor, 1 / factor),
-            tiled=True,
-            blockxsize=256,
-            blockysize=256,
-            compress="deflate",
-            predictor=2,
-            BIGTIFF="IF_SAFER",
-        )
+            profile.update(
+                driver="GTiff",
+                dtype="uint16",
+                count=src.count,
+                width=src.width * factor,
+                height=src.height * factor,
+                transform=src.transform * src.transform.scale(1 / factor, 1 / factor),
+                tiled=True,
+                blockxsize=256,
+                blockysize=256,
+                compress="deflate",
+                predictor=2,
+                BIGTIFF="IF_SAFER",
+            )
 
-        total_tiles = ((src.height + step - 1) // step) * ((src.width + step - 1) // step)
+            total_tiles = ((src.height + step - 1) // step) * ((src.width + step - 1) // step)
 
-        # UI placeholders
-        pbar = st.progress(0)
-        status = st.empty()
-        details = st.empty()
+            done_tiles = 0
+            last_draw = 0.0
 
-        done_tiles = 0
-        last_draw = 0.0
+            yield {
+                "progress": 0.0,
+                "status": f"Iniciando... Total tiles: {total_tiles} | device={device}",
+                "stage": "running"
+            }
 
-        with rasterio.open(out_tif, "w", **profile) as dst:
-            # --------- APPLY BAND DESCRIPTIONS + TAGS TO OUTPUT (ONCE) ---------
-            if global_tags:
-                dst.update_tags(**global_tags)
+            with rasterio.open(out_tif, "w", **profile) as dst:
+                if global_tags:
+                    dst.update_tags(**global_tags)
 
-            for i, name in enumerate(band_names, start=1):
-                dst.set_band_description(i, name)
-                tags_i = per_band_tags.get(i)
-                if tags_i:
-                    dst.update_tags(i, **tags_i)
-
-            batch_tiles = []
-            batch_meta = []
-
-            def flush():
-                nonlocal batch_tiles, batch_meta
-                if not batch_tiles:
-                    return
-
-                outs = run_batch(model, device, batch_tiles)
-
-                for out_sr, meta in zip(outs, batch_meta):
-                    (c0, r0, w, h, is_left, is_top, is_right, is_bottom) = meta
-
-                    left = 0 if is_left else pad
-                    top = 0 if is_top else pad
-                    right = w if is_right else (w - pad)
-                    bottom = h if is_bottom else (h - pad)
-
-                    sr_left = left * factor
-                    sr_top = top * factor
-                    sr_right = right * factor
-                    sr_bottom = bottom * factor
-
-                    out_crop = out_sr[:, sr_top:sr_bottom, sr_left:sr_right]
-                    out_crop = denormalize_output(out_crop)
-
-                    out_win = Window(
-                        (c0 + left) * factor,
-                        (r0 + top) * factor,
-                        (right - left) * factor,
-                        (bottom - top) * factor,
-                    )
-
-                    dst.write(out_crop, window=out_win)
+                for i, name in enumerate(band_names, start=1):
+                    dst.set_band_description(i, name)
+                    tags_i = per_band_tags.get(i)
+                    if tags_i:
+                        dst.update_tags(i, **tags_i)
 
                 batch_tiles = []
                 batch_meta = []
 
-            for r0 in range(0, src.height, step):
-                for c0 in range(0, src.width, step):
-                    w = min(patch, src.width - c0)
-                    h = min(patch, src.height - r0)
+                def flush():
+                    nonlocal batch_tiles, batch_meta
+                    if not batch_tiles:
+                        return
 
-                    win = Window(c0, r0, w, h)
-                    x = src.read(window=win)
-                    x = normalize_input(x)
-                    xpad, (hh, ww) = pad_to_patch(x, patch)
+                    outs = run_batch(model, device, batch_tiles)
 
-                    is_left = (c0 == 0)
-                    is_top = (r0 == 0)
-                    is_right = (c0 + w >= src.width)
-                    is_bottom = (r0 + h >= src.height)
+                    for out_sr, meta in zip(outs, batch_meta):
+                        (c0, r0, w, h, is_left, is_top, is_right, is_bottom) = meta
 
-                    batch_tiles.append(xpad)
-                    batch_meta.append((c0, r0, ww, hh, is_left, is_top, is_right, is_bottom))
+                        left = 0 if is_left else pad
+                        top = 0 if is_top else pad
+                        right = w if is_right else (w - pad)
+                        bottom = h if is_bottom else (h - pad)
 
-                    done_tiles += 1
-                    now = time.time()
+                        sr_left = left * factor
+                        sr_top = top * factor
+                        sr_right = right * factor
+                        sr_bottom = bottom * factor
 
-                    if now - last_draw > ui_update_every:
-                        pct = done_tiles / total_tiles if total_tiles else 1.0
-                        elapsed = now - start_t
-                        rate = done_tiles / elapsed if elapsed > 0 else 0.0
-                        eta = (total_tiles - done_tiles) / rate if rate > 0 else 0.0
+                        out_crop = out_sr[:, sr_top:sr_bottom, sr_left:sr_right]
+                        out_crop = denormalize_output(out_crop)
 
-                        pbar.progress(min(int(pct * 100), 100))
-                        status.write(
-                            f"device={device} | tiles {done_tiles}/{total_tiles} | "
-                            f"{rate:.2f} tiles/s | ETA {int(eta//60):02d}:{int(eta%60):02d}"
+                        out_win = Window(
+                            (c0 + left) * factor,
+                            (r0 + top) * factor,
+                            (right - left) * factor,
+                            (bottom - top) * factor,
                         )
-                        last_draw = now
 
-                    if len(batch_tiles) == batch:
-                        flush()
+                        dst.write(out_crop, window=out_win)
 
-            flush()
+                    batch_tiles = []
+                    batch_meta = []
 
-        pbar.progress(100)
-        details.success(f"Listo. Output: {out_tif}")
+                for r0 in range(0, src.height, step):
+                    for c0 in range(0, src.width, step):
+                        w = min(patch, src.width - c0)
+                        h = min(patch, src.height - r0)
 
+                        win = Window(c0, r0, w, h)
+                        x = src.read(window=win)
+                        x = normalize_input(x)
+                        xpad, (hh, ww) = pad_to_patch(x, patch)
 
-# -------------------------- UI --------------------------
-st.set_page_config(page_title="SEN2SRLite - SR Inference", layout="wide")
-st.title("SEN2SRLite - Super-Resolución (GeoTIFF)")
+                        is_left = (c0 == 0)
+                        is_top = (r0 == 0)
+                        is_right = (c0 + w >= src.width)
+                        is_bottom = (r0 + h >= src.height)
 
-with st.sidebar:
-    st.header("Rutas")
-    weights_dir = st.text_input("WEIGHTS_DIR", value="./SEN2SRLite")
+                        batch_tiles.append(xpad)
+                        batch_meta.append((c0, r0, ww, hh, is_left, is_top, is_right, is_bottom))
 
-    st.caption("Input: elige carpeta y luego un .tif. No se suben datos, se leen del disco local.")
-    input_dir = st.text_input("Input folder", value="./input_10bands_LR")
-    tifs = list_tifs(input_dir)
+                        done_tiles += 1
+                        now = time.time()
 
-    if tifs:
-        in_tif = st.selectbox("Input filename", tifs, format_func=lambda s: Path(s).name)
-    else:
-        st.warning("No encontré .tif/.tiff en esa carpeta. Escribe una ruta válida o pon el archivo manual.")
-        in_tif = st.text_input("Input filename (manual)", value="./input_10bands_LR/sept_2024_10bands.tif")
+                        if now - last_draw > ui_update_every:
+                            pct = done_tiles / total_tiles if total_tiles else 1.0
+                            elapsed = now - start_t
+                            rate = done_tiles / elapsed if elapsed > 0 else 0.0
+                            eta = (total_tiles - done_tiles) / rate if rate > 0 else 0.0
 
-    st.caption("Output: carpeta + nombre (se creará si no existe).")
-    output_dir = st.text_input("Output folder", value="./output_10bands_SR")
+                            status_msg = (
+                                f"device={device} | tiles {done_tiles}/{total_tiles} | "
+                                f"{rate:.2f} tiles/s | ETA {int(eta//60):02d}:{int(eta%60):02d}"
+                            )
+                            yield {"progress": pct * 100, "status": status_msg, "stage": "running"}
+                            last_draw = now
 
-    # --- Auto output name: <input_stem>_SR.tif (no overwrite if user edited) ---
-    in_name = Path(in_tif).name if in_tif else "output.tif"
-    in_stem = Path(in_name).stem
-    suggested_out = f"{in_stem}_SR.tif"
+                        if len(batch_tiles) == batch:
+                            flush()
 
-    if "out_name_user_edited" not in st.session_state:
-        st.session_state.out_name_user_edited = False
-    if "out_name" not in st.session_state:
-        st.session_state.out_name = suggested_out
-    if "last_in_tif" not in st.session_state:
-        st.session_state.last_in_tif = in_tif
+                flush()
 
-    if in_tif != st.session_state.last_in_tif:
-        st.session_state.last_in_tif = in_tif
-        if not st.session_state.out_name_user_edited:
-            st.session_state.out_name = suggested_out
+            yield {
+                "progress": 100.0,
+                "status": f"Completado. Guardado en {out_tif}",
+                "stage": "completed"
+            }
 
-    def _mark_outname_edited():
-        st.session_state.out_name_user_edited = True
-
-    out_name = st.text_input(
-        "Output filename",
-        key="out_name",
-        on_change=_mark_outname_edited,
-    )
-
-    out_tif = str(Path(output_dir) / out_name)
-
-    st.header("Compute")
-    st.caption(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        st.caption(f"GPU: {torch.cuda.get_device_name(0)}")
-    device_mode = st.selectbox("Device", ["auto", "cuda (GPU)", "cpu"], index=0)
-
-    st.header("Parámetros")
-    factor = st.number_input("FACTOR", min_value=1, max_value=8, value=4, step=1)
-    patch = st.number_input("PATCH", min_value=32, max_value=512, value=128, step=16)
-    pad = st.number_input("PAD", min_value=0, max_value=64, value=4, step=1)
-    batch = st.number_input("BATCH", min_value=1, max_value=64, value=7, step=1)
-
-    run = st.button("Run", type="primary")
+    except Exception as e:
+        yield {"error": str(e), "stage": "error"}
 
 
-# Resumen fuera del sidebar
-st.write("### Config actual")
-st.code(
-    f"WEIGHTS_DIR = {weights_dir}\n"
-    f"INPUT_DIR   = {input_dir}\n"
-    f"INPUT_FILE  = {in_tif}\n"
-    f"OUT_TIF     = {out_tif}\n"
-    f"DEVICE      = {device_mode}\n"
-    f"FACTOR={int(factor)} PATCH={int(patch)} PAD={int(pad)} BATCH={int(batch)}"
-)
+# -------------------------- API Endpoints --------------------------
+@app.get("/api/tifs")
+def api_get_tifs(folder: str = "./input_10bands_LR"):
+    return {"files": [Path(f).name for f in list_tifs(folder)]}
 
-if run:
+@app.get("/api/run")
+def api_run_get(
+    weights_dir: str = "./SEN2SRLite",
+    in_tif: str = "",
+    out_dir: str = "./output_10bands_SR",
+    out_name: str = "",
+    factor: int = 4,
+    patch: int = 128,
+    pad: int = 4,
+    batch: int = 7,
+    device: str = "auto"
+):
     if not Path(weights_dir).exists():
-        st.error(f"No existe WEIGHTS_DIR: {weights_dir}")
-    elif not Path(in_tif).exists():
-        st.error(f"No existe Input filename: {in_tif}")
-    else:
-        try:
-            run_sr(
-                weights_dir=Path(weights_dir),
-                in_tif=in_tif,
-                out_tif=out_tif,
-                factor=int(factor),
-                patch=int(patch),
-                pad=int(pad),
-                batch=int(batch),
-                device_mode=device_mode,
-            )
-        except Exception as e:
-            st.exception(e)
+        return StreamingResponse((f"data: {json.dumps({'error': f'No existe WEIGHTS_DIR: {weights_dir}'})}\n\n" for _ in range(1)), media_type="text/event-stream")
+    if not Path(in_tif).exists():
+        return StreamingResponse((f"data: {json.dumps({'error': f'No existe Input: {in_tif}'})}\n\n" for _ in range(1)), media_type="text/event-stream")
+    
+    out_path = str(Path(out_dir) / out_name)
+
+    def event_generator():
+        for event_data in run_sr_generator(Path(weights_dir), in_tif, out_path, factor, patch, pad, batch, device):
+            yield f"data: {json.dumps(event_data)}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/api/device_info")
+def api_device_info():
+    cuda_av = torch.cuda.is_available()
+    gpu_name = torch.cuda.get_device_name(0) if cuda_av else "N/A"
+    return {
+        "cuda_available": cuda_av,
+        "gpu_name": gpu_name
+    }
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
