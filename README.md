@@ -20,17 +20,17 @@ Herramienta web para mejorar la resolución espacial de imágenes satelitales Se
 Se recomienda usar **`uv`** para fijar versión de Python y dependencias.
 
 ```powershell
-# 1. Instalar uv (si no lo tienes)
+# 1. Instalar uv
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 2. Instalar versión exacta de Python
+# 2. Instalar la versión de Python
 uv python install 3.11.9
 
 # 3. Clonar el repositorio
 git clone https://github.com/luzarin/LR_to_SR_S2.git
 cd LR_to_SR_S2  
 
-# 4. Crear entorno virtual con esa versión y activarlo
+# 4. Crear y activar entorno virtual
 uv venv --python 3.11.9 .venv
 .\.venv\Scripts\Activate.ps1
 

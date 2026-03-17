@@ -23,7 +23,7 @@ Herramienta web para mejorar la resolución espacial de imágenes satelitales Se
 git clone https://github.com/luzarin/LR_to_SR_S2.git
 cd LR_to_SR_S2
 
-# 2. Instalar y fijar versión de Python
+# 2. Instalar y configurar versión de Python
 pyenv install 3.11.9
 pyenv local 3.11.9
 
