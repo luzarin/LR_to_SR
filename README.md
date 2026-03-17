@@ -27,8 +27,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 uv python install 3.11.9
 
 # 3. Clonar el repositorio
-git clone https://github.com/luzarin/LR_to_SR.git
-cd LR_to_SR
+git clone https://github.com/luzarin/LR_to_SR_S2.git
+cd LR_to_SR_S2  
 
 # 4. Crear entorno virtual con esa versión y activarlo
 uv venv --python 3.11.9 .venv
