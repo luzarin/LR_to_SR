@@ -40,6 +40,26 @@
             border-color: #6366f1 !important;
             box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
         }
+
+        #terminal {
+            scrollbar-width: thin;
+            scrollbar-color: #94a3b8 #27324f;
+        }
+
+        #terminal::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        #terminal::-webkit-scrollbar-track {
+            background: #27324f;
+            border-radius: 999px;
+        }
+
+        #terminal::-webkit-scrollbar-thumb {
+            background: #94a3b8;
+            border-radius: 999px;
+            border: 2px solid #27324f;
+        }
     </style>
 </head>
 
@@ -49,7 +69,7 @@
         <!-- Header -->
         <div class="text-center mb-8">
             <h1 class="text-5xl tracking-tight font-normal text-slate-900">Low-Res to High-Res Sentinel-2<br>Super-Resolution (SEN2SRLite)</h1>
-            <p class="mt-3 text-slate-700 text-xl">Este flujo aumenta la resolucion de Sentinel-2 para generar salidas super-resueltas a 2.5 m.</p>
+            <p class="mt-3 text-slate-700 text-xl">Este flujo aumenta la resolucion de Sentinel-2 para generar outputs a 2.5m</p>
         </div>
 
         <!-- Main Container Card -->
@@ -172,12 +192,12 @@
 
             <!-- Terminal Log -->
             <div class="border-t border-slate-200 pt-4">
-                <div class="bg-[var(--terminal)] rounded-lg p-4 relative">
-                <button onclick="clearLogs()" class="absolute top-2 right-2 text-gray-400 hover:text-white transition"
-                    title="Clear logs">
+                <div class="bg-[var(--terminal)] rounded-lg p-3 relative">
+                <button onclick="clearLogs()" class="absolute top-2 right-2 text-slate-300 hover:text-white transition rounded-md p-1 bg-slate-700/50"
+                    title="Limpiar logs">
                     <i data-lucide="trash-2" class="w-4 h-4"></i>
                 </button>
-                <div id="terminal" class="h-20 overflow-y-auto text-[#a7f3d0] font-mono text-xs space-y-1 whitespace-pre-wrap break-all">
+                <div id="terminal" class="h-20 pr-8 overflow-y-auto text-[#a7f3d0] font-mono text-xs leading-4 whitespace-pre-wrap break-all">
                     <div class="text-gray-500">> Ready</div>
                 </div>
                 </div>
@@ -211,9 +231,11 @@
         }
 
         function logToTerminal(msg, type = "normal") {
+            const text = String(msg ?? "").trim();
+            if (!text) return;
             const term = document.getElementById("terminal");
             const div = document.createElement("div");
-            div.textContent = `> ${msg}`;
+            div.textContent = `> ${text}`;
             if (type === "error") div.classList.add("text-red-400");
             if (type === "success") div.classList.add("text-green-400");
             term.appendChild(div);
@@ -222,7 +244,7 @@
 
         function clearLogs() {
             document.getElementById("terminal").innerHTML = '';
-            logToTerminal("Logs cleared.");
+            logToTerminal("Logs limpiados.");
         }
 
         async function loadDeviceInfo() {
