@@ -35,5 +35,5 @@ python -c "import torch; print(torch.__version__); print('cuda?', torch.cuda.is_
 
 ```powershell
 # 7. Correr la app
-uv run uvicorn app:app --reload
+uv run python -m uvicorn app:app --reload --port 8010
 ```
