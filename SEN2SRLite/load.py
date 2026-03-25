@@ -6,6 +6,8 @@ import sen2sr
 
 sen2sr.__version__
 
+EXPECTED_INPUT_BANDS = 10
+
 from sen2sr.models.opensr_baseline.cnn import CNNSR
 from sen2sr.models.tricks import HardConstraint
 from sen2sr.nonreference import srmodel as rgbn_model
@@ -209,3 +211,4 @@ def display_results(path: pathlib.Path, device: str = "cpu", *args, **kwargs):
         a.axis("off")
     fig.tight_layout()
     return fig
+
