@@ -1,7 +1,24 @@
+# Python
 .venv/
-.venv
 __pycache__/
 *.pyc
 .env
+
+# Editors
 .idea/
 .vscode/
+
+# Local datasets and outputs
+input_10bands_LR/*
+!input_10bands_LR/.gitkeep
+output_10bands_SR/*
+!output_10bands_SR/.gitkeep
+*.aux.xml
+*.ovr
+
+# LDSR-S2 runtime downloads (do not ignore source files)
+opensr-ldsrs2_v1_0_0.ckpt
+ldsr-s2/*.ckpt
+ldsr-s2/opensr-ldsrs2_v1_0_0.ckpt
+ldsr-s2/config_10m.yaml
+ldsr-s2/*.part
